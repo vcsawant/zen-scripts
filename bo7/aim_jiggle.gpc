@@ -1,0 +1,238 @@
+// BO7 Aim Jiggle
+//
+// Activation:  L1 (aim) + R1 (shoot) held simultaneously
+// Effect:      Downward pull + slight horizontal oscillation on right stick
+//
+// Configuration (in-game):
+//   Hold Triangle + Square for 3 seconds  -> enter config mode (OLED shows current value)
+//   D-pad Left / Right                    -> scroll between settings
+//   D-pad Up / Down                       -> adjust current setting
+//   X                                     -> confirm and exit config mode
+//
+// Settings (3 pages, wraps around):
+//   0: PULL DOWN  - downward recoil strength  (0-50, step 1)
+//   1: X JITTER   - horizontal oscillation    (0-30, step 1)
+//   2: JITTER MS  - jiggle interval timing    (0-100, step 5)
+//
+// Config-mode buttons are blocked from reaching the game.
+
+define CONFIG_HOLD_TIME = 3000;
+define NUM_SETTINGS     = 3;
+
+// Setting indices
+define SET_PULL_DOWN = 0;
+define SET_X_JITTER  = 1;
+define SET_JITTER_MS = 2;
+
+// ASCII digit lookup: '0'=48 .. '9'=57
+const uint8 ASCII_DIGIT[] = { 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 };
+
+int recoil_strength = 15;
+int jiggle_x        = 5;
+int jiggle_interval = 20;
+
+int config_mode     = FALSE;
+int config_page     = 0;
+int oled_dirty      = FALSE;
+int digit_pos;
+
+main {
+    // --- Config mode entry: hold Triangle + Square for 3 seconds ---
+    if(!config_mode
+       && get_val(PS4_TRIANGLE) && get_val(PS4_SQUARE)
+       && get_ptime(PS4_TRIANGLE) >= CONFIG_HOLD_TIME
+       && get_ptime(PS4_SQUARE)   >= CONFIG_HOLD_TIME) {
+        config_mode = TRUE;
+        config_page = SET_PULL_DOWN;
+        oled_dirty  = TRUE;
+        combo_run(RumbleNotify);
+    }
+
+    // --- Config mode ---
+    if(config_mode) {
+        block(PS4_UP, 100);
+        block(PS4_DOWN, 100);
+        block(PS4_LEFT, 100);
+        block(PS4_RIGHT, 100);
+        block(PS4_CROSS, 100);
+        block(PS4_TRIANGLE, 100);
+        block(PS4_SQUARE, 100);
+
+        // Left/Right: scroll between settings (wraps)
+        if(event_press(PS4_RIGHT)) {
+            config_page = config_page + 1;
+            if(config_page >= NUM_SETTINGS) config_page = 0;
+            oled_dirty = TRUE;
+        }
+        if(event_press(PS4_LEFT)) {
+            config_page = config_page - 1;
+            if(config_page < 0) config_page = NUM_SETTINGS - 1;
+            oled_dirty = TRUE;
+        }
+
+        // Up/Down: adjust current setting
+        if(event_press(PS4_UP)) {
+            adjust_setting(1);
+        }
+        if(event_press(PS4_DOWN)) {
+            adjust_setting(-1);
+        }
+
+        // Redraw OLED only when something changes
+        if(oled_dirty) {
+            draw_config_screen();
+            oled_dirty = FALSE;
+        }
+
+        // X: confirm and exit
+        if(event_press(PS4_CROSS)) {
+            config_mode = FALSE;
+            draw_active_screen();
+        }
+    }
+
+    // --- Aim jiggle: L1 + R1 held, not in config mode ---
+    if(!config_mode && get_val(PS4_L1) && get_val(PS4_R1)) {
+        combo_run(AimJiggle);
+    } else {
+        combo_stop(AimJiggle);
+    }
+}
+
+combo RumbleNotify {
+    set_rumble(RUMBLE_A, 80);
+    set_rumble(RUMBLE_B, 80);
+    wait(200);
+    set_rumble(RUMBLE_A, 0);
+    set_rumble(RUMBLE_B, 0);
+    wait(100);
+    set_rumble(RUMBLE_A, 80);
+    set_rumble(RUMBLE_B, 80);
+    wait(200);
+    reset_rumble();
+}
+
+combo AimJiggle {
+    set_val(PS4_RY, get_ival(PS4_RY) + recoil_strength);
+    set_val(PS4_RX, get_ival(PS4_RX) + jiggle_x);
+    wait(jiggle_interval);
+    set_val(PS4_RY, get_ival(PS4_RY) + recoil_strength);
+    set_val(PS4_RX, get_ival(PS4_RX) - jiggle_x);
+    wait(jiggle_interval);
+}
+
+// --- Setting adjustment ---
+
+function adjust_setting(dir) {
+    if(config_page == SET_PULL_DOWN) {
+        recoil_strength = recoil_strength + dir;
+        if(recoil_strength > 50) recoil_strength = 50;
+        if(recoil_strength < 0)  recoil_strength = 0;
+    }
+    if(config_page == SET_X_JITTER) {
+        jiggle_x = jiggle_x + dir;
+        if(jiggle_x > 30) jiggle_x = 30;
+        if(jiggle_x < 0)  jiggle_x = 0;
+    }
+    if(config_page == SET_JITTER_MS) {
+        jiggle_interval = jiggle_interval + (dir * 5);
+        if(jiggle_interval > 100) jiggle_interval = 100;
+        if(jiggle_interval < 0)   jiggle_interval = 0;
+    }
+    oled_dirty = TRUE;
+}
+
+// --- OLED helpers ---
+
+function draw_config_screen() {
+    cls_oled(OLED_BLACK);
+
+    // Page indicator: "1/3", "2/3", "3/3"
+    putc_oled(1, ASCII_DIGIT[config_page + 1]);
+    putc_oled(2, 47);  // /
+    putc_oled(3, ASCII_DIGIT[NUM_SETTINGS]);
+    puts_oled(100, 2, OLED_FONT_SMALL, 3, OLED_WHITE);
+
+    // Draw title and value for current page
+    if(config_page == SET_PULL_DOWN) {
+        // "PULL DOWN" (9 chars)
+        putc_oled(1, 80);   // P
+        putc_oled(2, 85);   // U
+        putc_oled(3, 76);   // L
+        putc_oled(4, 76);   // L
+        putc_oled(5, 32);   // (space)
+        putc_oled(6, 68);   // D
+        putc_oled(7, 79);   // O
+        putc_oled(8, 87);   // W
+        putc_oled(9, 78);   // N
+        puts_oled(5, 2, OLED_FONT_SMALL, 9, OLED_WHITE);
+        draw_value(recoil_strength);
+    }
+    if(config_page == SET_X_JITTER) {
+        // "X JITTER" (8 chars)
+        putc_oled(1, 88);   // X
+        putc_oled(2, 32);   // (space)
+        putc_oled(3, 74);   // J
+        putc_oled(4, 73);   // I
+        putc_oled(5, 84);   // T
+        putc_oled(6, 84);   // T
+        putc_oled(7, 69);   // E
+        putc_oled(8, 82);   // R
+        puts_oled(8, 2, OLED_FONT_SMALL, 8, OLED_WHITE);
+        draw_value(jiggle_x);
+    }
+    if(config_page == SET_JITTER_MS) {
+        // "JITTER MS" (9 chars)
+        putc_oled(1, 74);   // J
+        putc_oled(2, 73);   // I
+        putc_oled(3, 84);   // T
+        putc_oled(4, 84);   // T
+        putc_oled(5, 69);   // E
+        putc_oled(6, 82);   // R
+        putc_oled(7, 32);   // (space)
+        putc_oled(8, 77);   // M
+        putc_oled(9, 83);   // S
+        puts_oled(5, 2, OLED_FONT_SMALL, 9, OLED_WHITE);
+        draw_value(jiggle_interval);
+    }
+
+    // Hint row: [<][>] [up][down] [X]=OK
+    putc_oled(1, OLED_LEFT);
+    putc_oled(2, OLED_RIGHT);
+    putc_oled(3, 32);           // space
+    putc_oled(4, OLED_UP);
+    putc_oled(5, OLED_DOWN);
+    putc_oled(6, 32);           // space
+    putc_oled(7, OLED_CROSS);
+    putc_oled(8, 61);           // =
+    putc_oled(9, 79);           // O
+    putc_oled(10, 75);          // K
+    puts_oled(10, 52, OLED_FONT_SMALL, 10, OLED_WHITE);
+}
+
+function draw_value(val) {
+    digit_pos = 1;
+    if(val >= 100) {
+        putc_oled(digit_pos, ASCII_DIGIT[val / 100]);
+        digit_pos = digit_pos + 1;
+    }
+    if(val >= 10) {
+        putc_oled(digit_pos, ASCII_DIGIT[(val / 10) % 10]);
+        digit_pos = digit_pos + 1;
+    }
+    putc_oled(digit_pos, ASCII_DIGIT[val % 10]);
+    puts_oled(45, 22, OLED_FONT_LARGE, digit_pos, OLED_WHITE);
+}
+
+function draw_active_screen() {
+    cls_oled(OLED_BLACK);
+
+    // "ACTIVE" (6 chars)
+    putc_oled(1, 65);  // A
+    putc_oled(2, 67);  // C
+    putc_oled(3, 84);  // T
+    putc_oled(4, 73);  // I
+    putc_oled(5, 86);  // V
+    putc_oled(6, 69);  // E
+    puts_oled(34, 26, OLED_FONT_MEDIUM, 6, OLED_WHITE);
+}
