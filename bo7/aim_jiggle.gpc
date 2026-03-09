@@ -1,51 +1,57 @@
 // BO7 Aim Jiggle
 //
 // Activation:  L1 (aim) + R1 (shoot) held simultaneously
-// Effect:      Downward pull + slight horizontal oscillation on right stick
+// Effect:      Downward pull + horizontal oscillation on right stick
 //
 // Configuration (in-game):
-//   Hold Triangle + Square for 3 seconds  -> enter config mode (OLED shows current value)
-//   D-pad Left / Right                    -> scroll between settings
+//   D-pad Left + Down (in game)            -> enter config mode
+//   D-pad Left / Right (in config)        -> scroll between settings
 //   D-pad Up / Down                       -> adjust current setting
 //   X                                     -> confirm and exit config mode
 //
-// Settings (3 pages, wraps around):
-//   0: PULL DOWN  - downward recoil strength  (0-50, step 1)
-//   1: X JITTER   - horizontal oscillation    (0-30, step 1)
-//   2: JITTER MS  - jiggle interval timing    (0-100, step 5)
+// Settings (4 pages, wraps around):
+//   0: PULL DOWN  - downward recoil strength       (0-50,  step 1)
+//   1: X JITTER   - horizontal oscillation width    (0-30,  step 1)
+//   2: X CENTER   - horizontal oscillation center   (-30 to +30, step 1)
+//   3: JITTER MS  - jiggle interval timing          (0-100, step 5)
+//
+// The jiggle oscillates between (x_center - jiggle_x) and (x_center + jiggle_x).
+// Shifting x_center lets you bias the jiggle to counteract left/right recoil drift.
 //
 // Config-mode buttons are blocked from reaching the game.
 
-define CONFIG_HOLD_TIME = 3000;
-define NUM_SETTINGS     = 3;
+define NUM_SETTINGS     = 4;
 
-// Setting indices
 define SET_PULL_DOWN = 0;
 define SET_X_JITTER  = 1;
-define SET_JITTER_MS = 2;
+define SET_X_CENTER  = 2;
+define SET_JITTER_MS = 3;
 
 // ASCII digit lookup: '0'=48 .. '9'=57
 const uint8 ASCII_DIGIT[] = { 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 };
 
-int recoil_strength = 15;
-int jiggle_x        = 5;
-int jiggle_interval = 20;
+int recoil_strength = 25;
+int jiggle_x        = 2;
+int x_center        = 3;
+int jiggle_interval = 15;
 
 int config_mode     = FALSE;
 int config_page     = 0;
 int oled_dirty      = FALSE;
 int digit_pos;
+int nl_left;
+int nl_right;
+int nl_ctr;
 
 main {
-    // --- Config mode entry: hold Triangle + Square for 3 seconds ---
-    if(!config_mode
-       && get_val(PS4_TRIANGLE) && get_val(PS4_SQUARE)
-       && get_ptime(PS4_TRIANGLE) >= CONFIG_HOLD_TIME
-       && get_ptime(PS4_SQUARE)   >= CONFIG_HOLD_TIME) {
+    // --- Config mode entry: D-pad Left + Down simultaneously ---
+    if(!config_mode && get_val(PS4_LEFT) && event_press(PS4_DOWN)) {
         config_mode = TRUE;
         config_page = SET_PULL_DOWN;
         oled_dirty  = TRUE;
         combo_run(RumbleNotify);
+        block(PS4_LEFT, 100);
+        block(PS4_DOWN, 100);
     }
 
     // --- Config mode ---
@@ -84,8 +90,9 @@ main {
             oled_dirty = FALSE;
         }
 
-        // X: confirm and exit
+        // X: confirm and exit (block X long enough for release)
         if(event_press(PS4_CROSS)) {
+            block(PS4_CROSS, 500);
             config_mode = FALSE;
             draw_active_screen();
         }
@@ -114,10 +121,10 @@ combo RumbleNotify {
 
 combo AimJiggle {
     set_val(PS4_RY, get_ival(PS4_RY) + recoil_strength);
-    set_val(PS4_RX, get_ival(PS4_RX) + jiggle_x);
+    set_val(PS4_RX, get_ival(PS4_RX) + x_center + jiggle_x);
     wait(jiggle_interval);
     set_val(PS4_RY, get_ival(PS4_RY) + recoil_strength);
-    set_val(PS4_RX, get_ival(PS4_RX) - jiggle_x);
+    set_val(PS4_RX, get_ival(PS4_RX) + x_center - jiggle_x);
     wait(jiggle_interval);
 }
 
@@ -134,6 +141,11 @@ function adjust_setting(dir) {
         if(jiggle_x > 30) jiggle_x = 30;
         if(jiggle_x < 0)  jiggle_x = 0;
     }
+    if(config_page == SET_X_CENTER) {
+        x_center = x_center + dir;
+        if(x_center > 30)  x_center = 30;
+        if(x_center < -30) x_center = -30;
+    }
     if(config_page == SET_JITTER_MS) {
         jiggle_interval = jiggle_interval + (dir * 5);
         if(jiggle_interval > 100) jiggle_interval = 100;
@@ -147,13 +159,12 @@ function adjust_setting(dir) {
 function draw_config_screen() {
     cls_oled(OLED_BLACK);
 
-    // Page indicator: "1/3", "2/3", "3/3"
+    // Page indicator top-right: "1/4" etc
     putc_oled(1, ASCII_DIGIT[config_page + 1]);
     putc_oled(2, 47);  // /
     putc_oled(3, ASCII_DIGIT[NUM_SETTINGS]);
     puts_oled(100, 2, OLED_FONT_SMALL, 3, OLED_WHITE);
 
-    // Draw title and value for current page
     if(config_page == SET_PULL_DOWN) {
         // "PULL DOWN" (9 chars)
         putc_oled(1, 80);   // P
@@ -180,6 +191,20 @@ function draw_config_screen() {
         putc_oled(8, 82);   // R
         puts_oled(8, 2, OLED_FONT_SMALL, 8, OLED_WHITE);
         draw_value(jiggle_x);
+    }
+    if(config_page == SET_X_CENTER) {
+        // "X CENTER" (8 chars)
+        putc_oled(1, 88);   // X
+        putc_oled(2, 32);   // (space)
+        putc_oled(3, 67);   // C
+        putc_oled(4, 69);   // E
+        putc_oled(5, 78);   // N
+        putc_oled(6, 84);   // T
+        putc_oled(7, 69);   // E
+        putc_oled(8, 82);   // R
+        puts_oled(8, 2, OLED_FONT_SMALL, 8, OLED_WHITE);
+        draw_signed_value(x_center);
+        draw_number_line();
     }
     if(config_page == SET_JITTER_MS) {
         // "JITTER MS" (9 chars)
@@ -210,6 +235,7 @@ function draw_config_screen() {
     puts_oled(10, 52, OLED_FONT_SMALL, 10, OLED_WHITE);
 }
 
+// Unsigned value in LARGE font, centered vertically
 function draw_value(val) {
     digit_pos = 1;
     if(val >= 100) {
@@ -222,6 +248,55 @@ function draw_value(val) {
     }
     putc_oled(digit_pos, ASCII_DIGIT[val % 10]);
     puts_oled(45, 22, OLED_FONT_LARGE, digit_pos, OLED_WHITE);
+}
+
+// Signed value in MEDIUM font (leaves room for number line below)
+function draw_signed_value(val) {
+    digit_pos = 1;
+    if(val < 0) {
+        putc_oled(digit_pos, 45);  // '-'
+        digit_pos = digit_pos + 1;
+        val = 0 - val;
+    } else if(val > 0) {
+        putc_oled(digit_pos, 43);  // '+'
+        digit_pos = digit_pos + 1;
+    }
+    if(val >= 10) {
+        putc_oled(digit_pos, ASCII_DIGIT[val / 10]);
+        digit_pos = digit_pos + 1;
+    }
+    putc_oled(digit_pos, ASCII_DIGIT[val % 10]);
+    puts_oled(45, 14, OLED_FONT_MEDIUM, digit_pos, OLED_WHITE);
+}
+
+// Number line: maps -30..+30 across x=4..124
+// Shows zero tick, jiggle range as filled bar, center marker above
+function draw_number_line() {
+    // Horizontal baseline at y=42
+    line_oled(4, 42, 124, 42, 1, OLED_WHITE);
+
+    // Zero reference tick at screen center (x=64)
+    line_oled(64, 37, 64, 47, 1, OLED_WHITE);
+
+    // Jiggle range as filled rectangle (y=39..y=45)
+    nl_left  = 64 + (x_center - jiggle_x) * 2;
+    nl_right = 64 + (x_center + jiggle_x) * 2;
+    if(nl_left < 4)    nl_left = 4;
+    if(nl_right > 124) nl_right = 124;
+    if(nl_right > nl_left) {
+        rect_oled(nl_left, 39, nl_right - nl_left, 7, 1, OLED_WHITE);
+    }
+
+    // If zero tick falls inside the filled range, cut it out in black
+    if(64 > nl_left && 64 < nl_right) {
+        line_oled(64, 39, 64, 45, 1, OLED_BLACK);
+    }
+
+    // Center marker: line extending above the range bar
+    nl_ctr = 64 + x_center * 2;
+    if(nl_ctr >= 4 && nl_ctr <= 124) {
+        line_oled(nl_ctr, 33, nl_ctr, 39, 2, OLED_WHITE);
+    }
 }
 
 function draw_active_screen() {
