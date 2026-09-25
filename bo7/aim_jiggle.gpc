@@ -1,57 +1,286 @@
-// BO7 Aim Jiggle
+// BO7 Aim Assist + Anti-Recoil + Rapid Fire, with profiles
 //
-// Activation:  L1 (aim) + R1 (shoot) held simultaneously
-// Effect:      Downward pull + horizontal oscillation on right stick
+// Layout: L1 = aim (ADS), R1 = shoot.
+//
+// Profiles
+//   Four fixed-name profiles, each with its own saved copy of every tuning
+//   setting (pages 2-11). RAPID and TAP MS are global.
+//     1: SUB    - SMGs, light anti-recoil, small jitter
+//     2: WZ AR  - Warzone long range, heavier pull, long fade, OVAL jitter
+//     3: MP AR  - multiplayer mid range (the general defaults)
+//     4: MISC   - spare, starts as a copy of MP AR
+//   Switch in game:  hold D-pad Up + press Right = next, Up + Left = previous.
+//                    Rumble pulses once per profile number. Idle OLED shows
+//                    the profile name.
+//   Switch in menu:  page 1 PROFILE, Up / Down cycles. The other pages reload
+//                    with that profile's values immediately.
+//
+// Aim-assist jitter (while L1 held, firing or not)
+//   The right stick traces a small continuous pattern bounded by +/- X JITTER
+//   and +/- Y JITTER, one full lap every JITTER MS. Constant stick motion
+//   keeps the game's rotational aim assist engaged while you track.
+//     FIG8: sideways infinity, x = sin(t), y = sin(2t). Crosses center twice
+//           per lap. Y JITTER 0 = smooth horizontal sweep.
+//     OVAL: ellipse, x = cos(t), y = sin(t). Never crosses center, so the
+//           stick is always deflected. Strongest aim-assist signal.
+//   Values are small, so lower the in-game right-stick deadzone or the game
+//   never sees them. The jitter cannot cancel idle sway (unknown phase); its
+//   only job is keeping aim assist engaged.
+//   LS JITTER adds a smooth left/right micro-strafe to the left stick while
+//   ADS, but only when the left stick is idle. Experimental. 0 = off.
+//
+// Anti-recoil (while L1 + R1 held)
+//   Pulls the right stick down by PULL DOWN and sideways by X CENTER, scaled by:
+//   - Fade:    100% on the first shots, ramping linearly to FADE TO % after
+//              FADE MS of sustained fire. Resets when R1 is released.
+//              FADE TO 100 disables the fade.
+//   - Backoff: reads your raw right-stick deflection. Full strength below
+//              35% of BACKOFF, zero at BACKOFF and above, linear in between.
+//              Flick or track hard and the anti-recoil gets out of your way.
+//
+// Rapid fire (semi-auto weapons, global)
+//   Toggle:      D-pad Right + Down (in game) flips rapid fire on/off.
+//                Rumble: two pulses = ON, one pulse = OFF. OLED shows state.
+//   Activation:  R1 held while rapid fire is ON (hip fire or ADS).
+//   Effect:      R1 is pulsed: held for TAP MS, released for TAP MS, repeat.
+//                The game's per-weapon fire rate cap does the limiting, so one
+//                TAP MS value works for every semi-auto.
 //
 // Configuration (in-game):
-//   D-pad Left + Down (in game)            -> enter config mode
-//   D-pad Left / Right (in config)        -> scroll between settings
-//   D-pad Up / Down                       -> adjust current setting
-//   X                                     -> confirm and exit config mode
+//   D-pad Left + Down (in game)    -> enter config mode
+//   D-pad Left / Right (in config) -> scroll between pages (wraps)
+//   D-pad Up / Down                -> adjust current page
+//   Square                         -> reset the CURRENT profile to its preset
+//   X                              -> save and exit config mode
 //
-// Settings (4 pages, wraps around):
-//   0: PULL DOWN  - downward recoil strength       (0-50,  step 1)
-//   1: X JITTER   - horizontal oscillation width    (0-30,  step 1)
-//   2: X CENTER   - horizontal oscillation center   (-30 to +30, step 1)
-//   3: JITTER MS  - jiggle interval timing          (0-100, step 5)
+// Pages (13):
+//    1: PROFILE    - SUB / WZ AR / MP AR / MISC             (Up or Down cycles)
+//    2: PULL DOWN  - vertical anti-recoil strength          (0-50,   step 1)
+//    3: X CENTER   - horizontal anti-recoil bias            (-30..30, step 1)
+//    4: FADE TO %  - anti-recoil strength after FADE MS     (0-100,  step 10)
+//    5: FADE MS    - time to ramp down to FADE TO %         (100-2000, step 100)
+//    6: BACKOFF    - stick deflection that fully disables   (30-100, step 5)
+//    7: PATTERN    - jitter shape FIG8 / OVAL               (Up or Down toggles)
+//    8: X JITTER   - pattern half-width                     (0-20,   step 1)
+//    9: Y JITTER   - pattern half-height, 0 = horizontal    (0-20,   step 1)
+//   10: JITTER MS  - time for one full lap                  (20-500, step 10)
+//   11: LS JITTER  - left-stick strafe amplitude, 0 = off   (0-20,   step 1)
+//   12: RAPID      - rapid fire ON / OFF, global            (Up or Down toggles)
+//   13: TAP MS     - rapid fire hold & release, global      (10-100, step 5)
 //
-// The jiggle oscillates between (x_center - jiggle_x) and (x_center + jiggle_x).
-// Shifting x_center lets you bias the jiggle to counteract left/right recoil drift.
+// Persistence
+//   The Zen exposes 16 script slots (SPVAR_1..16). Every setting is stored as
+//   a step index ((value - min) / step) and bit-packed into a stream across
+//   the slots, 15 bits per slot. Stream: magic (8 bits), active profile (2),
+//   RAPID, TAP MS, then 4 profiles x 10 settings. Bit widths come from the
+//   settings tables, so new settings pack automatically. Bump CFG_MAGIC when
+//   the tables or profile layout change so stale saves are discarded.
+//
+// TAP MS guide (hold = release = TAP MS, so one tap takes 2 x TAP MS):
+//   100   = 300 taps/min, a quick human
+//   60-85 = 360-480 taps/min, a fast human sustained over a magazine
+//   40-50 = 600-720 taps/min, elite human burst
+//   30    = 1000 taps/min, default, above any human rate, safe at 60 fps
+//   10-20 = frame-limited floor, only reliable at 120 fps
+// Calibrate once: hold fire 10s in the firing range, note ammo used, lower
+// TAP MS by 5, repeat. Stop at the lowest value where shots stop climbing.
 //
 // Config-mode buttons are blocked from reaching the game.
 
-define NUM_SETTINGS     = 4;
+// --- Settings table ---
+
+define N_SET         = 12;
+define N_PROF_SET    = 10;   // settings 0..9 live in a profile; the rest are global
 
 define SET_PULL_DOWN = 0;
-define SET_X_JITTER  = 1;
-define SET_X_CENTER  = 2;
-define SET_JITTER_MS = 3;
+define SET_X_CENTER  = 1;
+define SET_FADE_TO   = 2;
+define SET_FADE_MS   = 3;
+define SET_BACKOFF   = 4;
+define SET_PATTERN   = 5;
+define SET_X_JITTER  = 6;
+define SET_Y_JITTER  = 7;
+define SET_JITTER_MS = 8;
+define SET_LS_JITTER = 9;
+define SET_RAPID     = 10;
+define SET_TAP_MS    = 11;
+
+define PT_VALUE   = 0;
+define PT_SIGNED  = 1;
+define PT_TOGGLE  = 2;   // shows ON / OFF
+define PT_PATTERN = 3;   // shows FIG8 / OVAL
+
+define PAT_FIG8 = 0;
+define PAT_OVAL = 1;
+
+//                              PULL  XCTR  FADE% FADEMS BACK  PATRN XJIT  YJIT  JITMS LSJIT RAPID TAPMS
+const int16 SET_MIN[]  = {      0,  -30,    0,   100,   30,    0,    0,    0,   20,    0,    0,   10 };
+const int16 SET_MAX[]  = {     50,   30,  100,  2000,  100,    1,   20,   20,  500,   20,    1,  100 };
+const int16 SET_STEP[] = {      1,    1,   10,   100,    5,    1,    1,    1,   10,    1,    1,    5 };
+const int16 SET_DEF[]  = {     25,    3,   50,  1000,   70,    0,    8,    0,   80,    0,    0,   30 };
+const int8  SET_TYPE[] = { PT_VALUE, PT_SIGNED, PT_VALUE, PT_VALUE, PT_VALUE, PT_PATTERN, PT_VALUE, PT_VALUE, PT_VALUE, PT_VALUE, PT_TOGGLE, PT_VALUE };
+
+// --- Profiles ---
+
+define N_PROF      = 4;
+define N_PROF_VALS = 40;     // N_PROF * N_PROF_SET
+
+define PROF_SUB   = 0;
+define PROF_WZ_AR = 1;
+define PROF_MP_AR = 2;
+define PROF_MISC  = 3;
+
+// Presets, one row per profile:  PULL XCTR FADE% FADEMS BACK PATRN XJIT YJIT JITMS LSJIT
+const int16 PROF_DEF[] = {
+    15,   0,   50,   600,   60,   0,    4,   0,   80,   0,      // SUB
+    30,   3,   60,  1500,   75,   1,   10,   4,  100,   0,      // WZ AR
+    25,   3,   50,  1000,   70,   0,    8,   0,   80,   0,      // MP AR
+    25,   3,   50,  1000,   70,   0,    8,   0,   80,   0       // MISC
+};
+
+// --- Menu pages: page 0 is PROFILE, page n is setting n-1 ---
+
+define N_PAGES      = 13;    // 1 + N_SET
+define PAGE_PROFILE = 0;
+
+// --- Persistence ---
+
+define N_PVARS    = 16;
+define PVAR_BITS  = 15;      // usable bits per slot, keeps stored values 0..32767
+define MAGIC_BITS = 8;
+define PROF_BITS  = 2;
+define CFG_MAGIC  = 203;     // bump when tables or profile layout change
+
+// --- Tuning constants ---
+
+define BACKOFF_SOFT_PCT = 35;    // anti-recoil starts fading at this % of BACKOFF
+define LS_IDLE          = 20;    // left stick counts as idle below this deflection
+
+define SMALL_W  = 7;             // OLED font glyph widths (px)
+define MEDIUM_W = 12;
+define LARGE_W  = 16;
+
+// sin() scaled to -100..100 over 64 steps per revolution
+const int8 SIN64[] = {
+       0,   10,   20,   29,   38,   47,   56,   63,
+      71,   77,   83,   88,   92,   96,   98,  100,
+     100,  100,   98,   96,   92,   88,   83,   77,
+      71,   63,   56,   47,   38,   29,   20,   10,
+       0,  -10,  -20,  -29,  -38,  -47,  -56,  -63,
+     -71,  -77,  -83,  -88,  -92,  -96,  -98, -100,
+    -100, -100,  -98,  -96,  -92,  -88,  -83,  -77,
+     -71,  -63,  -56,  -47,  -38,  -29,  -20,  -10
+};
+
+// --- OLED strings ---
+
+const string S_PROFILE   = "PROFILE";
+const string S_PULL_DOWN = "PULL DOWN";
+const string S_X_CENTER  = "X CENTER";
+const string S_FADE_TO   = "FADE TO %";
+const string S_FADE_MS   = "FADE MS";
+const string S_BACKOFF   = "BACKOFF";
+const string S_PATTERN   = "PATTERN";
+const string S_X_JITTER  = "X JITTER";
+const string S_Y_JITTER  = "Y JITTER";
+const string S_JITTER_MS = "JITTER MS";
+const string S_LS_JITTER = "LS JITTER";
+const string S_RAPID     = "RAPID";
+const string S_TAP_MS    = "TAP MS";
+const string S_FIG8      = "FIG8";
+const string S_OVAL      = "OVAL";
+const string S_ON        = "ON";
+const string S_OFF       = "OFF";
+const string S_RAPID_ON  = "RAPID ON";
+const string S_RAPID_OFF = "RAPID OFF";
+const string S_SUB       = "SUB";
+const string S_WZ_AR     = "WZ AR";
+const string S_MP_AR     = "MP AR";
+const string S_MISC      = "MISC";
 
 // ASCII digit lookup: '0'=48 .. '9'=57
 const uint8 ASCII_DIGIT[] = { 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 };
 
-int recoil_strength = 25;
-int jiggle_x        = 2;
-int x_center        = 3;
-int jiggle_interval = 15;
+// --- State ---
 
-int config_mode     = FALSE;
-int config_page     = 0;
-int oled_dirty      = FALSE;
+int cfg[N_SET];              // working values: active profile's 0..9 plus globals
+int prof_vals[N_PROF_VALS];  // all four profiles
+int active_prof = PROF_MP_AR;
+
+int pv[N_PVARS];             // slot buffer for load / save
+int set_bits[N_SET];         // bit width of each setting's step index
+int bs_pos, bs_i, bs_w, bs_b, bs_r;
+int pi, si, cur;
+
+int config_mode = FALSE;
+int config_page = 0;
+int oled_dirty  = FALSE;
+int rumble_left;             // pulses still to play
+
+int jit_t;        // ms elapsed in the current lap
+int jit_a;        // lap angle, 0..63
+int jx, jy;       // right-stick jitter offsets this loop
+int rx, ry, lx;   // stick values being built this loop
+
+int ar_t;         // ms of sustained fire, for the fade
+int ar_ramp;      // fade factor 0..100
+int ar_in;        // raw right-stick deflection
+int ar_soft;      // deflection where backoff starts
+int ar_f;         // backoff factor 0..100
+int ar_scale;     // ar_ramp * ar_f / 100
+
 int digit_pos;
+int tmp;
+int i;
 int nl_left;
 int nl_right;
 int nl_ctr;
+
+init {
+    compute_bits();
+    load_settings();
+}
 
 main {
     // --- Config mode entry: D-pad Left + Down simultaneously ---
     if(!config_mode && get_val(PS4_LEFT) && event_press(PS4_DOWN)) {
         config_mode = TRUE;
-        config_page = SET_PULL_DOWN;
+        config_page = PAGE_PROFILE;
         oled_dirty  = TRUE;
-        combo_run(RumbleNotify);
+        rumble_left = 2;
         block(PS4_LEFT, 100);
         block(PS4_DOWN, 100);
+    }
+
+    // --- Rapid fire toggle: D-pad Right + Down simultaneously ---
+    if(!config_mode && get_val(PS4_RIGHT) && event_press(PS4_DOWN)) {
+        cfg[SET_RAPID] = !cfg[SET_RAPID];
+        if(cfg[SET_RAPID]) rumble_left = 2;
+        else               rumble_left = 1;
+        save_settings();
+        block(PS4_RIGHT, 100);
+        block(PS4_DOWN, 100);
+        draw_active_screen();
+    }
+
+    // --- Profile switch: D-pad Up + Right = next, Up + Left = previous ---
+    if(!config_mode && get_val(PS4_UP) && event_press(PS4_RIGHT)) {
+        tmp = active_prof + 1;
+        if(tmp >= N_PROF) tmp = 0;
+        set_profile(tmp);
+        rumble_left = active_prof + 1;
+        block(PS4_UP, 100);
+        block(PS4_RIGHT, 100);
+        draw_active_screen();
+    }
+    if(!config_mode && get_val(PS4_UP) && event_press(PS4_LEFT)) {
+        tmp = active_prof - 1;
+        if(tmp < 0) tmp = N_PROF - 1;
+        set_profile(tmp);
+        rumble_left = active_prof + 1;
+        block(PS4_UP, 100);
+        block(PS4_LEFT, 100);
+        draw_active_screen();
     }
 
     // --- Config mode ---
@@ -64,24 +293,33 @@ main {
         block(PS4_TRIANGLE, 100);
         block(PS4_SQUARE, 100);
 
-        // Left/Right: scroll between settings (wraps)
+        // Left/Right: scroll between pages (wraps)
         if(event_press(PS4_RIGHT)) {
             config_page = config_page + 1;
-            if(config_page >= NUM_SETTINGS) config_page = 0;
+            if(config_page >= N_PAGES) config_page = 0;
             oled_dirty = TRUE;
         }
         if(event_press(PS4_LEFT)) {
             config_page = config_page - 1;
-            if(config_page < 0) config_page = NUM_SETTINGS - 1;
+            if(config_page < 0) config_page = N_PAGES - 1;
             oled_dirty = TRUE;
         }
 
-        // Up/Down: adjust current setting
+        // Up/Down: adjust current page
         if(event_press(PS4_UP)) {
-            adjust_setting(1);
+            adjust_page(1);
         }
         if(event_press(PS4_DOWN)) {
-            adjust_setting(-1);
+            adjust_page(-1);
+        }
+
+        // Square: reset the current profile to its preset
+        if(event_press(PS4_SQUARE)) {
+            reset_profile(active_prof);
+            load_active();
+            save_settings();
+            rumble_left = 1;
+            oled_dirty  = TRUE;
         }
 
         // Redraw OLED only when something changes
@@ -90,156 +328,390 @@ main {
             oled_dirty = FALSE;
         }
 
-        // X: confirm and exit (block X long enough for release)
+        // X: save and exit (block X long enough for release)
         if(event_press(PS4_CROSS)) {
             block(PS4_CROSS, 500);
             config_mode = FALSE;
+            save_settings();
             draw_active_screen();
         }
     }
 
-    // --- Aim jiggle: L1 + R1 held, not in config mode ---
-    if(!config_mode && get_val(PS4_L1) && get_val(PS4_R1)) {
-        combo_run(AimJiggle);
+    // --- Rumble driver: play queued pulses one at a time ---
+    if(rumble_left > 0 && !combo_running(RumblePulse)) {
+        rumble_left = rumble_left - 1;
+        combo_run(RumblePulse);
+    }
+
+    // --- Aim mods: jitter while L1 held, anti-recoil while L1 + R1 held ---
+    if(!config_mode && get_val(PS4_L1)) {
+        aim_mods();
     } else {
-        combo_stop(AimJiggle);
+        jit_t = 0;
+        jit_a = 0;
+        ar_t  = 0;
+    }
+
+    // --- Rapid fire: R1 held, rapid fire on, not in config mode ---
+    if(!config_mode && cfg[SET_RAPID] && get_val(PS4_R1)) {
+        combo_run(RapidFire);
+    } else {
+        combo_stop(RapidFire);
     }
 }
 
-combo RumbleNotify {
+// --- Combos ---
+
+combo RumblePulse {
     set_rumble(RUMBLE_A, 80);
     set_rumble(RUMBLE_B, 80);
-    wait(200);
-    set_rumble(RUMBLE_A, 0);
-    set_rumble(RUMBLE_B, 0);
-    wait(100);
-    set_rumble(RUMBLE_A, 80);
-    set_rumble(RUMBLE_B, 80);
-    wait(200);
+    wait(150);
     reset_rumble();
+    wait(120);
 }
 
-combo AimJiggle {
-    set_val(PS4_RY, get_ival(PS4_RY) + recoil_strength);
-    set_val(PS4_RX, get_ival(PS4_RX) + x_center + jiggle_x);
-    wait(jiggle_interval);
-    set_val(PS4_RY, get_ival(PS4_RY) + recoil_strength);
-    set_val(PS4_RX, get_ival(PS4_RX) + x_center - jiggle_x);
-    wait(jiggle_interval);
+combo RapidFire {
+    set_val(PS4_R1, 100);
+    wait(cfg[SET_TAP_MS]);
+    set_val(PS4_R1, 0);
+    wait(cfg[SET_TAP_MS]);
 }
 
-// --- Setting adjustment ---
+// --- Aim mods (called every loop while L1 is held) ---
 
-function adjust_setting(dir) {
-    if(config_page == SET_PULL_DOWN) {
-        recoil_strength = recoil_strength + dir;
-        if(recoil_strength > 50) recoil_strength = 50;
-        if(recoil_strength < 0)  recoil_strength = 0;
+function aim_mods() {
+    // Lap timer: one full pattern every JITTER MS, 64 angle steps per lap
+    jit_t = jit_t + get_rtime();
+    if(jit_t >= cfg[SET_JITTER_MS]) jit_t = jit_t - cfg[SET_JITTER_MS];
+    jit_a = (jit_t * 64) / cfg[SET_JITTER_MS];
+    if(jit_a > 63) jit_a = 63;
+
+    if(cfg[SET_PATTERN] == PAT_OVAL) {
+        // Ellipse: never crosses center
+        jx = cfg[SET_X_JITTER] * cs(jit_a) / 100;
+        jy = cfg[SET_Y_JITTER] * sn(jit_a) / 100;
+    } else {
+        // Figure-8: y runs at twice the rate of x
+        jx = cfg[SET_X_JITTER] * sn(jit_a) / 100;
+        jy = cfg[SET_Y_JITTER] * sn(jit_a * 2) / 100;
     }
-    if(config_page == SET_X_JITTER) {
-        jiggle_x = jiggle_x + dir;
-        if(jiggle_x > 30) jiggle_x = 30;
-        if(jiggle_x < 0)  jiggle_x = 0;
+
+    rx = get_val(PS4_RX) + jx;
+    ry = get_val(PS4_RY) + jy;
+
+    // Left-stick strafe, only when the left stick is idle
+    if(cfg[SET_LS_JITTER] > 0 && abs(get_ival(PS4_LX)) < LS_IDLE && abs(get_ival(PS4_LY)) < LS_IDLE) {
+        lx = get_val(PS4_LX) + (cfg[SET_LS_JITTER] * sn(jit_a) / 100);
+        set_val(PS4_LX, clamp100(lx));
     }
-    if(config_page == SET_X_CENTER) {
-        x_center = x_center + dir;
-        if(x_center > 30)  x_center = 30;
-        if(x_center < -30) x_center = -30;
+
+    // Anti-recoil while firing
+    if(get_val(PS4_R1)) {
+        // Fade: 100% -> FADE TO % over FADE MS. Divide by 10 first to keep
+        // the intermediate product small.
+        if(ar_t < cfg[SET_FADE_MS]) ar_t = ar_t + get_rtime();
+        if(ar_t > cfg[SET_FADE_MS]) ar_t = cfg[SET_FADE_MS];
+        ar_ramp = 100 - ((100 - cfg[SET_FADE_TO]) * (ar_t / 10) / (cfg[SET_FADE_MS] / 10));
+
+        // Backoff: scale by how hard the player is moving the right stick
+        ar_in = abs(get_ival(PS4_RX));
+        if(abs(get_ival(PS4_RY)) > ar_in) ar_in = abs(get_ival(PS4_RY));
+        ar_soft = cfg[SET_BACKOFF] * BACKOFF_SOFT_PCT / 100;
+        if(ar_in >= cfg[SET_BACKOFF]) {
+            ar_f = 0;
+        } else if(ar_in <= ar_soft) {
+            ar_f = 100;
+        } else {
+            ar_f = (cfg[SET_BACKOFF] - ar_in) * 100 / (cfg[SET_BACKOFF] - ar_soft);
+        }
+
+        ar_scale = ar_ramp * ar_f / 100;
+        ry = ry + (cfg[SET_PULL_DOWN] * ar_scale / 100);
+        rx = rx + (cfg[SET_X_CENTER]  * ar_scale / 100);
+    } else {
+        ar_t = 0;
     }
-    if(config_page == SET_JITTER_MS) {
-        jiggle_interval = jiggle_interval + (dir * 5);
-        if(jiggle_interval > 100) jiggle_interval = 100;
-        if(jiggle_interval < 0)   jiggle_interval = 0;
+
+    set_val(PS4_RX, clamp100(rx));
+    set_val(PS4_RY, clamp100(ry));
+}
+
+function clamp100(v) {
+    if(v > 100)  return 100;
+    if(v < -100) return -100;
+    return v;
+}
+
+// Sine / cosine lookups, angle in 64ths of a revolution, result -100..100
+function sn(a) {
+    return SIN64[a % 64];
+}
+
+function cs(a) {
+    return SIN64[(a + 16) % 64];
+}
+
+// --- Menu adjustment ---
+
+function adjust_page(dir) {
+    if(config_page == PAGE_PROFILE) {
+        tmp = active_prof + dir;
+        if(tmp >= N_PROF) tmp = 0;
+        if(tmp < 0)       tmp = N_PROF - 1;
+        set_profile(tmp);
+    } else {
+        cur = config_page - 1;
+        if(SET_TYPE[cur] == PT_TOGGLE || SET_TYPE[cur] == PT_PATTERN) {
+            cfg[cur] = !cfg[cur];
+        } else {
+            cfg[cur] = cfg[cur] + (dir * SET_STEP[cur]);
+            if(cfg[cur] > SET_MAX[cur]) cfg[cur] = SET_MAX[cur];
+            if(cfg[cur] < SET_MIN[cur]) cfg[cur] = SET_MIN[cur];
+        }
     }
     oled_dirty = TRUE;
 }
 
-// --- OLED helpers ---
+// --- Profiles ---
+
+// Copy the working values into the active profile's slot
+function sync_active() {
+    for(si = 0; si < N_PROF_SET; si++) prof_vals[active_prof * N_PROF_SET + si] = cfg[si];
+}
+
+// Copy the active profile's slot into the working values
+function load_active() {
+    for(si = 0; si < N_PROF_SET; si++) cfg[si] = prof_vals[active_prof * N_PROF_SET + si];
+}
+
+function reset_profile(p) {
+    for(si = 0; si < N_PROF_SET; si++) prof_vals[p * N_PROF_SET + si] = PROF_DEF[p * N_PROF_SET + si];
+}
+
+function set_profile(p) {
+    sync_active();
+    active_prof = p;
+    load_active();
+    save_settings();
+}
+
+function reset_all() {
+    for(pi = 0; pi < N_PROF; pi++) reset_profile(pi);
+    cfg[SET_RAPID]  = SET_DEF[SET_RAPID];
+    cfg[SET_TAP_MS] = SET_DEF[SET_TAP_MS];
+    active_prof = PROF_MP_AR;
+    load_active();
+    save_settings();
+}
+
+// --- Persistence: bit-packed stream across the SPVAR slots ---
+
+// Bits needed for each setting's step index, derived from the tables
+function compute_bits() {
+    for(si = 0; si < N_SET; si++) {
+        tmp = (SET_MAX[si] - SET_MIN[si]) / SET_STEP[si] + 1;
+        set_bits[si] = 0;
+        while((1 << set_bits[si]) < tmp) set_bits[si] = set_bits[si] + 1;
+    }
+}
+
+function pack_idx(s, v) {
+    return (v - SET_MIN[s]) / SET_STEP[s];
+}
+
+function unpack_idx(s, idx) {
+    tmp = SET_MIN[s] + (idx * SET_STEP[s]);
+    if(tmp > SET_MAX[s]) tmp = SET_MAX[s];
+    if(tmp < SET_MIN[s]) tmp = SET_MIN[s];
+    return tmp;
+}
+
+// Append nbits of val (LSB first) at bs_pos
+function bs_write(val, nbits) {
+    for(bs_i = 0; bs_i < nbits; bs_i++) {
+        bs_w = bs_pos / PVAR_BITS;
+        bs_b = bs_pos % PVAR_BITS;
+        if((val >> bs_i) & 1) pv[bs_w] = pv[bs_w] | (1 << bs_b);
+        bs_pos = bs_pos + 1;
+    }
+}
+
+// Read nbits at bs_pos (LSB first)
+function bs_read(nbits) {
+    bs_r = 0;
+    for(bs_i = 0; bs_i < nbits; bs_i++) {
+        bs_w = bs_pos / PVAR_BITS;
+        bs_b = bs_pos % PVAR_BITS;
+        if((pv[bs_w] >> bs_b) & 1) bs_r = bs_r | (1 << bs_i);
+        bs_pos = bs_pos + 1;
+    }
+    return bs_r;
+}
+
+function load_settings() {
+    pv_load();
+    bs_pos = 0;
+    if(bs_read(MAGIC_BITS) == CFG_MAGIC) {
+        active_prof     = bs_read(PROF_BITS);
+        cfg[SET_RAPID]  = unpack_idx(SET_RAPID,  bs_read(set_bits[SET_RAPID]));
+        cfg[SET_TAP_MS] = unpack_idx(SET_TAP_MS, bs_read(set_bits[SET_TAP_MS]));
+        for(pi = 0; pi < N_PROF; pi++) {
+            for(si = 0; si < N_PROF_SET; si++) {
+                prof_vals[pi * N_PROF_SET + si] = unpack_idx(si, bs_read(set_bits[si]));
+            }
+        }
+        load_active();
+    } else {
+        reset_all();
+    }
+}
+
+function save_settings() {
+    sync_active();
+    for(i = 0; i < N_PVARS; i++) pv[i] = 0;
+    bs_pos = 0;
+    bs_write(CFG_MAGIC, MAGIC_BITS);
+    bs_write(active_prof, PROF_BITS);
+    bs_write(pack_idx(SET_RAPID,  cfg[SET_RAPID]),  set_bits[SET_RAPID]);
+    bs_write(pack_idx(SET_TAP_MS, cfg[SET_TAP_MS]), set_bits[SET_TAP_MS]);
+    for(pi = 0; pi < N_PROF; pi++) {
+        for(si = 0; si < N_PROF_SET; si++) {
+            bs_write(pack_idx(si, prof_vals[pi * N_PROF_SET + si]), set_bits[si]);
+        }
+    }
+    pv_store();
+}
+
+function pv_load() {
+    pv[0]  = get_pvar(SPVAR_1,  0, 32767, 0);
+    pv[1]  = get_pvar(SPVAR_2,  0, 32767, 0);
+    pv[2]  = get_pvar(SPVAR_3,  0, 32767, 0);
+    pv[3]  = get_pvar(SPVAR_4,  0, 32767, 0);
+    pv[4]  = get_pvar(SPVAR_5,  0, 32767, 0);
+    pv[5]  = get_pvar(SPVAR_6,  0, 32767, 0);
+    pv[6]  = get_pvar(SPVAR_7,  0, 32767, 0);
+    pv[7]  = get_pvar(SPVAR_8,  0, 32767, 0);
+    pv[8]  = get_pvar(SPVAR_9,  0, 32767, 0);
+    pv[9]  = get_pvar(SPVAR_10, 0, 32767, 0);
+    pv[10] = get_pvar(SPVAR_11, 0, 32767, 0);
+    pv[11] = get_pvar(SPVAR_12, 0, 32767, 0);
+    pv[12] = get_pvar(SPVAR_13, 0, 32767, 0);
+    pv[13] = get_pvar(SPVAR_14, 0, 32767, 0);
+    pv[14] = get_pvar(SPVAR_15, 0, 32767, 0);
+    pv[15] = get_pvar(SPVAR_16, 0, 32767, 0);
+}
+
+function pv_store() {
+    set_pvar(SPVAR_1,  pv[0]);
+    set_pvar(SPVAR_2,  pv[1]);
+    set_pvar(SPVAR_3,  pv[2]);
+    set_pvar(SPVAR_4,  pv[3]);
+    set_pvar(SPVAR_5,  pv[4]);
+    set_pvar(SPVAR_6,  pv[5]);
+    set_pvar(SPVAR_7,  pv[6]);
+    set_pvar(SPVAR_8,  pv[7]);
+    set_pvar(SPVAR_9,  pv[8]);
+    set_pvar(SPVAR_10, pv[9]);
+    set_pvar(SPVAR_11, pv[10]);
+    set_pvar(SPVAR_12, pv[11]);
+    set_pvar(SPVAR_13, pv[12]);
+    set_pvar(SPVAR_14, pv[13]);
+    set_pvar(SPVAR_15, pv[14]);
+    set_pvar(SPVAR_16, pv[15]);
+}
+
+// --- OLED ---
 
 function draw_config_screen() {
     cls_oled(OLED_BLACK);
+    draw_page_indicator();
 
-    // Page indicator top-right: "1/4" etc
-    putc_oled(1, ASCII_DIGIT[config_page + 1]);
-    putc_oled(2, 47);  // /
-    putc_oled(3, ASCII_DIGIT[NUM_SETTINGS]);
-    puts_oled(100, 2, OLED_FONT_SMALL, 3, OLED_WHITE);
-
-    if(config_page == SET_PULL_DOWN) {
-        // "PULL DOWN" (9 chars)
-        putc_oled(1, 80);   // P
-        putc_oled(2, 85);   // U
-        putc_oled(3, 76);   // L
-        putc_oled(4, 76);   // L
-        putc_oled(5, 32);   // (space)
-        putc_oled(6, 68);   // D
-        putc_oled(7, 79);   // O
-        putc_oled(8, 87);   // W
-        putc_oled(9, 78);   // N
-        puts_oled(5, 2, OLED_FONT_SMALL, 9, OLED_WHITE);
-        draw_value(recoil_strength);
-    }
-    if(config_page == SET_X_JITTER) {
-        // "X JITTER" (8 chars)
-        putc_oled(1, 88);   // X
-        putc_oled(2, 32);   // (space)
-        putc_oled(3, 74);   // J
-        putc_oled(4, 73);   // I
-        putc_oled(5, 84);   // T
-        putc_oled(6, 84);   // T
-        putc_oled(7, 69);   // E
-        putc_oled(8, 82);   // R
-        puts_oled(8, 2, OLED_FONT_SMALL, 8, OLED_WHITE);
-        draw_value(jiggle_x);
-    }
-    if(config_page == SET_X_CENTER) {
-        // "X CENTER" (8 chars)
-        putc_oled(1, 88);   // X
-        putc_oled(2, 32);   // (space)
-        putc_oled(3, 67);   // C
-        putc_oled(4, 69);   // E
-        putc_oled(5, 78);   // N
-        putc_oled(6, 84);   // T
-        putc_oled(7, 69);   // E
-        putc_oled(8, 82);   // R
-        puts_oled(8, 2, OLED_FONT_SMALL, 8, OLED_WHITE);
-        draw_signed_value(x_center);
-        draw_number_line();
-    }
-    if(config_page == SET_JITTER_MS) {
-        // "JITTER MS" (9 chars)
-        putc_oled(1, 74);   // J
-        putc_oled(2, 73);   // I
-        putc_oled(3, 84);   // T
-        putc_oled(4, 84);   // T
-        putc_oled(5, 69);   // E
-        putc_oled(6, 82);   // R
-        putc_oled(7, 32);   // (space)
-        putc_oled(8, 77);   // M
-        putc_oled(9, 83);   // S
-        puts_oled(5, 2, OLED_FONT_SMALL, 9, OLED_WHITE);
-        draw_value(jiggle_interval);
+    if(config_page == PAGE_PROFILE) {
+        print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_PROFILE[0]);
+        draw_profile_name(active_prof, 22, OLED_FONT_LARGE, LARGE_W);
+    } else {
+        cur = config_page - 1;
+        draw_label(cur);
+        if(SET_TYPE[cur] == PT_TOGGLE) {
+            draw_on_off(cfg[cur], 45, 22, OLED_FONT_LARGE);
+        } else if(SET_TYPE[cur] == PT_PATTERN) {
+            draw_pattern_name(cfg[cur], 32, 22, OLED_FONT_LARGE);
+        } else if(SET_TYPE[cur] == PT_SIGNED) {
+            draw_signed_value(cfg[cur]);
+            draw_number_line();
+        } else {
+            draw_value(cfg[cur]);
+        }
     }
 
-    // Hint row: [<][>] [up][down] [X]=OK
-    putc_oled(1, OLED_LEFT);
-    putc_oled(2, OLED_RIGHT);
-    putc_oled(3, 32);           // space
-    putc_oled(4, OLED_UP);
-    putc_oled(5, OLED_DOWN);
-    putc_oled(6, 32);           // space
-    putc_oled(7, OLED_CROSS);
-    putc_oled(8, 61);           // =
-    putc_oled(9, 79);           // O
-    putc_oled(10, 75);          // K
-    puts_oled(10, 52, OLED_FONT_SMALL, 10, OLED_WHITE);
+    draw_hint_row();
 }
 
-// Unsigned value in LARGE font, centered vertically
+// Page indicator top-right, e.g. "3/13"
+function draw_page_indicator() {
+    digit_pos = 1;
+    tmp = config_page + 1;
+    if(tmp >= 10) {
+        putc_oled(digit_pos, ASCII_DIGIT[tmp / 10]);
+        digit_pos = digit_pos + 1;
+    }
+    putc_oled(digit_pos, ASCII_DIGIT[tmp % 10]);
+    digit_pos = digit_pos + 1;
+    putc_oled(digit_pos, 47);  // /
+    digit_pos = digit_pos + 1;
+    if(N_PAGES >= 10) {
+        putc_oled(digit_pos, ASCII_DIGIT[N_PAGES / 10]);
+        digit_pos = digit_pos + 1;
+    }
+    putc_oled(digit_pos, ASCII_DIGIT[N_PAGES % 10]);
+    puts_oled(124 - (digit_pos * SMALL_W), 2, OLED_FONT_SMALL, digit_pos, OLED_WHITE);
+}
+
+function draw_label(s) {
+    if(s == SET_PULL_DOWN) print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_PULL_DOWN[0]);
+    if(s == SET_X_CENTER)  print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_X_CENTER[0]);
+    if(s == SET_FADE_TO)   print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_FADE_TO[0]);
+    if(s == SET_FADE_MS)   print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_FADE_MS[0]);
+    if(s == SET_BACKOFF)   print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_BACKOFF[0]);
+    if(s == SET_PATTERN)   print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_PATTERN[0]);
+    if(s == SET_X_JITTER)  print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_X_JITTER[0]);
+    if(s == SET_Y_JITTER)  print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_Y_JITTER[0]);
+    if(s == SET_JITTER_MS) print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_JITTER_MS[0]);
+    if(s == SET_LS_JITTER) print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_LS_JITTER[0]);
+    if(s == SET_RAPID)     print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_RAPID[0]);
+    if(s == SET_TAP_MS)    print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_TAP_MS[0]);
+}
+
+// Hint row: [<][>] [up][down] [X]=OK [square]=RST
+function draw_hint_row() {
+    putc_oled(1,  OLED_LEFT);
+    putc_oled(2,  OLED_RIGHT);
+    putc_oled(3,  32);          // space
+    putc_oled(4,  OLED_UP);
+    putc_oled(5,  OLED_DOWN);
+    putc_oled(6,  32);          // space
+    putc_oled(7,  OLED_CROSS);
+    putc_oled(8,  61);          // =
+    putc_oled(9,  79);          // O
+    putc_oled(10, 75);          // K
+    putc_oled(11, 32);          // space
+    putc_oled(12, OLED_SQUARE);
+    putc_oled(13, 61);          // =
+    putc_oled(14, 82);          // R
+    putc_oled(15, 83);          // S
+    putc_oled(16, 84);          // T
+    puts_oled(8, 52, OLED_FONT_SMALL, 16, OLED_WHITE);
+}
+
+// Unsigned value (up to 4 digits) in LARGE font, centered horizontally
 function draw_value(val) {
     digit_pos = 1;
+    if(val >= 1000) {
+        putc_oled(digit_pos, ASCII_DIGIT[val / 1000]);
+        digit_pos = digit_pos + 1;
+    }
     if(val >= 100) {
-        putc_oled(digit_pos, ASCII_DIGIT[val / 100]);
+        putc_oled(digit_pos, ASCII_DIGIT[(val / 100) % 10]);
         digit_pos = digit_pos + 1;
     }
     if(val >= 10) {
@@ -247,7 +719,7 @@ function draw_value(val) {
         digit_pos = digit_pos + 1;
     }
     putc_oled(digit_pos, ASCII_DIGIT[val % 10]);
-    puts_oled(45, 22, OLED_FONT_LARGE, digit_pos, OLED_WHITE);
+    puts_oled(64 - (digit_pos * LARGE_W) / 2, 22, OLED_FONT_LARGE, digit_pos, OLED_WHITE);
 }
 
 // Signed value in MEDIUM font (leaves room for number line below)
@@ -269,8 +741,28 @@ function draw_signed_value(val) {
     puts_oled(45, 14, OLED_FONT_MEDIUM, digit_pos, OLED_WHITE);
 }
 
+// "ON" or "OFF" at the given position/font
+function draw_on_off(is_on, x, y, font) {
+    if(is_on) print(x, y, font, OLED_WHITE, S_ON[0]);
+    else      print(x, y, font, OLED_WHITE, S_OFF[0]);
+}
+
+// "FIG8" or "OVAL" at the given position/font
+function draw_pattern_name(pat, x, y, font) {
+    if(pat == PAT_OVAL) print(x, y, font, OLED_WHITE, S_OVAL[0]);
+    else                print(x, y, font, OLED_WHITE, S_FIG8[0]);
+}
+
+// Profile name centered horizontally at row y
+function draw_profile_name(p, y, font, char_w) {
+    if(p == PROF_SUB)   print(64 - (3 * char_w) / 2, y, font, OLED_WHITE, S_SUB[0]);
+    if(p == PROF_WZ_AR) print(64 - (5 * char_w) / 2, y, font, OLED_WHITE, S_WZ_AR[0]);
+    if(p == PROF_MP_AR) print(64 - (5 * char_w) / 2, y, font, OLED_WHITE, S_MP_AR[0]);
+    if(p == PROF_MISC)  print(64 - (4 * char_w) / 2, y, font, OLED_WHITE, S_MISC[0]);
+}
+
 // Number line: maps -30..+30 across x=4..124
-// Shows zero tick, jiggle range as filled bar, center marker above
+// Shows zero tick, X CENTER +/- X JITTER as filled bar, center marker above
 function draw_number_line() {
     // Horizontal baseline at y=42
     line_oled(4, 42, 124, 42, 1, OLED_WHITE);
@@ -278,9 +770,9 @@ function draw_number_line() {
     // Zero reference tick at screen center (x=64)
     line_oled(64, 37, 64, 47, 1, OLED_WHITE);
 
-    // Jiggle range as filled rectangle (y=39..y=45)
-    nl_left  = 64 + (x_center - jiggle_x) * 2;
-    nl_right = 64 + (x_center + jiggle_x) * 2;
+    // Jitter range as filled rectangle (y=39..y=45)
+    nl_left  = 64 + (cfg[SET_X_CENTER] - cfg[SET_X_JITTER]) * 2;
+    nl_right = 64 + (cfg[SET_X_CENTER] + cfg[SET_X_JITTER]) * 2;
     if(nl_left < 4)    nl_left = 4;
     if(nl_right > 124) nl_right = 124;
     if(nl_right > nl_left) {
@@ -293,21 +785,16 @@ function draw_number_line() {
     }
 
     // Center marker: line extending above the range bar
-    nl_ctr = 64 + x_center * 2;
+    nl_ctr = 64 + cfg[SET_X_CENTER] * 2;
     if(nl_ctr >= 4 && nl_ctr <= 124) {
         line_oled(nl_ctr, 33, nl_ctr, 39, 2, OLED_WHITE);
     }
 }
 
+// Idle screen: profile name on top, "RAPID ON" / "RAPID OFF" below
 function draw_active_screen() {
     cls_oled(OLED_BLACK);
-
-    // "ACTIVE" (6 chars)
-    putc_oled(1, 65);  // A
-    putc_oled(2, 67);  // C
-    putc_oled(3, 84);  // T
-    putc_oled(4, 73);  // I
-    putc_oled(5, 86);  // V
-    putc_oled(6, 69);  // E
-    puts_oled(34, 26, OLED_FONT_MEDIUM, 6, OLED_WHITE);
+    draw_profile_name(active_prof, 12, OLED_FONT_MEDIUM, MEDIUM_W);
+    if(cfg[SET_RAPID]) print(36, 42, OLED_FONT_SMALL, OLED_WHITE, S_RAPID_ON[0]);
+    else               print(32, 42, OLED_FONT_SMALL, OLED_WHITE, S_RAPID_OFF[0]);
 }
