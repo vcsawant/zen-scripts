@@ -114,9 +114,9 @@ define PAT_FIG8 = 0;
 define PAT_OVAL = 1;
 
 //                              PULL  XCTR  FADE% FADEMS BACK  PATRN XJIT  YJIT  JITMS LSJIT RAPID TAPMS
-const int16 SET_MIN[]  = {      0,  -30,    0,   100,   30,    0,    0,    0,   20,    0,    0,   10 };
+const int8  SET_MIN[]  = {      0,  -30,    0,   100,   30,    0,    0,    0,   20,    0,    0,   10 };
 const int16 SET_MAX[]  = {     50,   30,  100,  2000,  100,    1,   20,   20,  500,   20,    1,  100 };
-const int16 SET_STEP[] = {      1,    1,   10,   100,    5,    1,    1,    1,   10,    1,    1,    5 };
+const int8  SET_STEP[] = {      1,    1,   10,   100,    5,    1,    1,    1,   10,    1,    1,    5 };
 const int16 SET_DEF[]  = {     25,    3,   50,  1000,   70,    0,    8,    0,   80,    0,    0,   30 };
 const int8  SET_TYPE[] = { PT_VALUE, PT_SIGNED, PT_VALUE, PT_VALUE, PT_VALUE, PT_PATTERN, PT_VALUE, PT_VALUE, PT_VALUE, PT_VALUE, PT_TOGGLE, PT_VALUE };
 
@@ -659,10 +659,9 @@ function draw_page_indicator() {
     digit_pos = digit_pos + 1;
     putc_oled(digit_pos, 47);  // /
     digit_pos = digit_pos + 1;
-    if(N_PAGES >= 10) {
-        putc_oled(digit_pos, ASCII_DIGIT[N_PAGES / 10]);
-        digit_pos = digit_pos + 1;
-    }
+    // N_PAGES is a two-digit constant
+    putc_oled(digit_pos, ASCII_DIGIT[N_PAGES / 10]);
+    digit_pos = digit_pos + 1;
     putc_oled(digit_pos, ASCII_DIGIT[N_PAGES % 10]);
     puts_oled(124 - (digit_pos * SMALL_W), 2, OLED_FONT_SMALL, digit_pos, OLED_WHITE);
 }
