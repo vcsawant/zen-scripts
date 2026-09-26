@@ -1,19 +1,31 @@
-// BO7 Aim Assist + Anti-Recoil + Rapid Fire, with profiles
+// BO7 Aim Assist + Anti-Recoil + Rapid Fire, with profiles and weapon slots
 //
-// Layout: L1 = aim (ADS), R1 = shoot.
+// Layout: L1 = aim (ADS), R1 = shoot, Triangle = swap weapon (hold = plates).
+//
+// Weapon slots
+//   The script tracks whether you hold your PRIMARY or SECONDARY by watching
+//   Triangle: a release under SWAP_HOLD_MS is a swap, longer is a plate.
+//   Triangle always passes through to the game. Each slot owns its own
+//   profile and its own rapid fire state, so one tap of Triangle swaps both.
+//   The slot is not saved; the script boots on PRIMARY.
+//   Drift happens (respawn, ground pickups, swapping with one gun). Resync:
+//   hold D-pad Left + press Up forces PRIMARY. The idle OLED shows both slots
+//   with a chevron on the current one, so drift is easy to spot.
 //
 // Profiles
 //   Four fixed-name profiles, each with its own saved copy of every tuning
-//   setting (pages 2-11). RAPID and TAP MS are global.
+//   setting (pages 2-11). Each weapon slot points at one profile. TAP MS is
+//   global; RAPID is per slot.
 //     1: SUB    - SMGs, light anti-recoil, small jitter
 //     2: WZ AR  - Warzone long range, heavier pull, long fade, OVAL jitter
 //     3: MP AR  - multiplayer mid range (the general defaults)
 //     4: MISC   - spare, starts as a copy of MP AR
 //   Switch in game:  hold D-pad Up + press Right = next, Up + Left = previous.
-//                    Rumble pulses once per profile number. Idle OLED shows
-//                    the profile name.
+//                    Changes the CURRENT slot's profile. Rumble pulses once
+//                    per profile number.
 //   Switch in menu:  page 1 PROFILE, Up / Down cycles. The other pages reload
-//                    with that profile's values immediately.
+//                    with that profile's values immediately. The menu edits
+//                    whichever slot you were on when you opened it.
 //
 // Aim-assist jitter (while L1 held, firing or not)
 //   The right stick traces a small continuous pattern bounded by +/- X JITTER
@@ -38,9 +50,9 @@
 //              35% of BACKOFF, zero at BACKOFF and above, linear in between.
 //              Flick or track hard and the anti-recoil gets out of your way.
 //
-// Rapid fire (semi-auto weapons, global)
-//   Toggle:      D-pad Right + Down (in game) flips rapid fire on/off.
-//                Rumble: two pulses = ON, one pulse = OFF. OLED shows state.
+// Rapid fire (semi-auto weapons, per weapon slot)
+//   Toggle:      D-pad Right + Down (in game) flips rapid fire for the
+//                CURRENT slot. Rumble: two pulses = ON, one pulse = OFF.
 //   Activation:  R1 held while rapid fire is ON (hip fire or ADS).
 //   Effect:      R1 is pulsed: held for TAP MS, released for TAP MS, repeat.
 //                The game's per-weapon fire rate cap does the limiting, so one
@@ -48,6 +60,7 @@
 //
 // Configuration (in-game):
 //   D-pad Left + Down (in game)    -> enter config mode
+//   D-pad Left + Up   (in game)    -> resync weapon slot to PRIMARY
 //   D-pad Left / Right (in config) -> scroll between pages (wraps)
 //   D-pad Up / Down                -> adjust current page
 //   Square                         -> reset the CURRENT profile to its preset
@@ -65,14 +78,15 @@
 //    9: Y JITTER   - pattern half-height, 0 = horizontal    (0-20,   step 1)
 //   10: JITTER MS  - time for one full lap                  (20-500, step 10)
 //   11: LS JITTER  - left-stick strafe amplitude, 0 = off   (0-20,   step 1)
-//   12: RAPID      - rapid fire ON / OFF, global            (Up or Down toggles)
+//   12: RAPID      - rapid fire ON / OFF, per slot          (Up or Down toggles)
 //   13: TAP MS     - rapid fire hold & release, global      (10-100, step 5)
 //
 // Persistence
 //   The Zen exposes 16 script slots (SPVAR_1..16). Every setting is stored as
 //   a step index ((value - min) / step) and bit-packed into a stream across
-//   the slots, 15 bits per slot. Stream: magic (8 bits), active profile (2),
-//   RAPID, TAP MS, then 4 profiles x 10 settings. Bit widths come from the
+//   the slots, 15 bits per slot. Stream: magic (8 bits), primary profile (2),
+//   secondary profile (2), primary RAPID (1), secondary RAPID (1), TAP MS,
+//   then 4 profiles x 10 settings. Bit widths come from the
 //   settings tables, so new settings pack automatically. Bump CFG_MAGIC when
 //   the tables or profile layout change so stale saves are discarded.
 //
@@ -138,6 +152,13 @@ const int16 PROF_DEF[] = {
     25,   3,   50,  1000,   70,   0,    8,   0,   80,   0       // MISC
 };
 
+// --- Weapon slots ---
+
+define N_SLOT       = 2;
+define SLOT_PRI     = 0;
+define SLOT_SEC     = 1;
+define SWAP_HOLD_MS = 250;   // Triangle released sooner than this = weapon swap, longer = plate
+
 // --- Menu pages: page 0 is PROFILE, page n is setting n-1 ---
 
 define N_PAGES      = 13;    // 1 + N_SET
@@ -149,7 +170,7 @@ define N_PVARS    = 16;
 define PVAR_BITS  = 15;      // usable bits per slot, keeps stored values 0..32767
 define MAGIC_BITS = 8;
 define PROF_BITS  = 2;
-define CFG_MAGIC  = 203;     // bump when tables or profile layout change
+define CFG_MAGIC  = 204;     // bump when tables or profile layout change
 
 // --- Tuning constants ---
 
@@ -157,7 +178,6 @@ define BACKOFF_SOFT_PCT = 35;    // anti-recoil starts fading at this % of BACKO
 define LS_IDLE          = 20;    // left stick counts as idle below this deflection
 
 define SMALL_W  = 7;             // OLED font glyph widths (px)
-define MEDIUM_W = 12;
 define LARGE_W  = 16;
 
 // sin() scaled to -100..100 over 64 steps per revolution
@@ -191,21 +211,28 @@ const string S_FIG8      = "FIG8";
 const string S_OVAL      = "OVAL";
 const string S_ON        = "ON";
 const string S_OFF       = "OFF";
-const string S_RAPID_ON  = "RAPID ON";
-const string S_RAPID_OFF = "RAPID OFF";
 const string S_SUB       = "SUB";
 const string S_WZ_AR     = "WZ AR";
 const string S_MP_AR     = "MP AR";
 const string S_MISC      = "MISC";
+const string S_PRI       = "PRI";
+const string S_SEC       = "SEC";
+const string S_R_ON      = "R:ON";
+const string S_R_OFF     = "R:OFF";
 
 // ASCII digit lookup: '0'=48 .. '9'=57
 const uint8 ASCII_DIGIT[] = { 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 };
 
 // --- State ---
 
-int cfg[N_SET];              // working values: active profile's 0..9 plus globals
+int cfg[N_SET];              // working values: current slot's profile 0..9, its RAPID, and TAP MS
 int prof_vals[N_PROF_VALS];  // all four profiles
-int active_prof = PROF_MP_AR;
+int active_prof = PROF_MP_AR;   // profile of the current slot (mirrors slot_prof[slot])
+
+int slot = SLOT_PRI;         // weapon slot in hand, not persisted
+int slot_prof[N_SLOT];       // profile per slot
+int slot_rapid[N_SLOT];      // rapid fire per slot
+int tri_t;                   // ms Triangle has been held
 
 int pv[N_PVARS];             // slot buffer for load / save
 int set_bits[N_SET];         // bit width of each setting's step index
@@ -263,6 +290,23 @@ main {
         draw_active_screen();
     }
 
+    // --- Slot resync: D-pad Left + Up forces PRIMARY ---
+    if(!config_mode && get_val(PS4_LEFT) && event_press(PS4_UP)) {
+        set_slot(SLOT_PRI);
+        rumble_left = 1;
+        block(PS4_LEFT, 100);
+        block(PS4_UP, 100);
+    }
+
+    // --- Weapon swap tracking: Triangle tap = swap, hold = plates ---
+    if(!config_mode) {
+        if(event_press(PS4_TRIANGLE)) tri_t = 0;
+        if(get_val(PS4_TRIANGLE) && tri_t < 10000) tri_t = tri_t + get_rtime();
+        if(event_release(PS4_TRIANGLE) && tri_t < SWAP_HOLD_MS) {
+            set_slot(1 - slot);
+        }
+    }
+
     // --- Profile switch: D-pad Up + Right = next, Up + Left = previous ---
     if(!config_mode && get_val(PS4_UP) && event_press(PS4_RIGHT)) {
         tmp = active_prof + 1;
@@ -315,6 +359,7 @@ main {
 
         // Square: reset the current profile to its preset
         if(event_press(PS4_SQUARE)) {
+            sync_active();   // keep an unsaved RAPID edit; only the profile resets
             reset_profile(active_prof);
             load_active();
             save_settings();
@@ -474,14 +519,29 @@ function adjust_page(dir) {
 
 // --- Profiles ---
 
-// Copy the working values into the active profile's slot
+// Copy the working values back into the current profile and weapon slot
 function sync_active() {
     for(si = 0; si < N_PROF_SET; si++) prof_vals[active_prof * N_PROF_SET + si] = cfg[si];
+    slot_prof[slot]  = active_prof;
+    slot_rapid[slot] = cfg[SET_RAPID];
 }
 
-// Copy the active profile's slot into the working values
+// Load the current weapon slot's profile and rapid state into the working values
 function load_active() {
+    active_prof = slot_prof[slot];
     for(si = 0; si < N_PROF_SET; si++) cfg[si] = prof_vals[active_prof * N_PROF_SET + si];
+    cfg[SET_RAPID] = slot_rapid[slot];
+}
+
+// Switch weapon slot. Not saved: the slot is transient.
+function set_slot(new_slot) {
+    sync_active();
+    slot = new_slot;
+    load_active();
+    jit_t = 0;
+    jit_a = 0;
+    ar_t  = 0;
+    draw_active_screen();
 }
 
 function reset_profile(p) {
@@ -490,16 +550,19 @@ function reset_profile(p) {
 
 function set_profile(p) {
     sync_active();
-    active_prof = p;
+    slot_prof[slot] = p;
     load_active();
     save_settings();
 }
 
 function reset_all() {
     for(pi = 0; pi < N_PROF; pi++) reset_profile(pi);
-    cfg[SET_RAPID]  = SET_DEF[SET_RAPID];
+    slot_prof[SLOT_PRI]  = PROF_MP_AR;
+    slot_prof[SLOT_SEC]  = PROF_SUB;
+    slot_rapid[SLOT_PRI] = 0;
+    slot_rapid[SLOT_SEC] = 0;
     cfg[SET_TAP_MS] = SET_DEF[SET_TAP_MS];
-    active_prof = PROF_MP_AR;
+    slot = SLOT_PRI;
     load_active();
     save_settings();
 }
@@ -552,14 +615,17 @@ function load_settings() {
     pv_load();
     bs_pos = 0;
     if(bs_read(MAGIC_BITS) == CFG_MAGIC) {
-        active_prof     = bs_read(PROF_BITS);
-        cfg[SET_RAPID]  = unpack_idx(SET_RAPID,  bs_read(set_bits[SET_RAPID]));
-        cfg[SET_TAP_MS] = unpack_idx(SET_TAP_MS, bs_read(set_bits[SET_TAP_MS]));
+        slot_prof[SLOT_PRI]  = bs_read(PROF_BITS);
+        slot_prof[SLOT_SEC]  = bs_read(PROF_BITS);
+        slot_rapid[SLOT_PRI] = unpack_idx(SET_RAPID, bs_read(set_bits[SET_RAPID]));
+        slot_rapid[SLOT_SEC] = unpack_idx(SET_RAPID, bs_read(set_bits[SET_RAPID]));
+        cfg[SET_TAP_MS]      = unpack_idx(SET_TAP_MS, bs_read(set_bits[SET_TAP_MS]));
         for(pi = 0; pi < N_PROF; pi++) {
             for(si = 0; si < N_PROF_SET; si++) {
                 prof_vals[pi * N_PROF_SET + si] = unpack_idx(si, bs_read(set_bits[si]));
             }
         }
+        slot = SLOT_PRI;
         load_active();
     } else {
         reset_all();
@@ -571,8 +637,10 @@ function save_settings() {
     for(i = 0; i < N_PVARS; i++) pv[i] = 0;
     bs_pos = 0;
     bs_write(CFG_MAGIC, MAGIC_BITS);
-    bs_write(active_prof, PROF_BITS);
-    bs_write(pack_idx(SET_RAPID,  cfg[SET_RAPID]),  set_bits[SET_RAPID]);
+    bs_write(slot_prof[SLOT_PRI], PROF_BITS);
+    bs_write(slot_prof[SLOT_SEC], PROF_BITS);
+    bs_write(pack_idx(SET_RAPID, slot_rapid[SLOT_PRI]), set_bits[SET_RAPID]);
+    bs_write(pack_idx(SET_RAPID, slot_rapid[SLOT_SEC]), set_bits[SET_RAPID]);
     bs_write(pack_idx(SET_TAP_MS, cfg[SET_TAP_MS]), set_bits[SET_TAP_MS]);
     for(pi = 0; pi < N_PROF; pi++) {
         for(si = 0; si < N_PROF_SET; si++) {
@@ -628,7 +696,7 @@ function draw_config_screen() {
 
     if(config_page == PAGE_PROFILE) {
         print(5, 2, OLED_FONT_SMALL, OLED_WHITE, S_PROFILE[0]);
-        draw_profile_name(active_prof, 22, OLED_FONT_LARGE, LARGE_W);
+        draw_profile_name_centered(active_prof, 22, OLED_FONT_LARGE, LARGE_W);
     } else {
         cur = config_page - 1;
         draw_label(cur);
@@ -752,12 +820,36 @@ function draw_pattern_name(pat, x, y, font) {
     else                print(x, y, font, OLED_WHITE, S_FIG8[0]);
 }
 
+// Profile name left-aligned at x, y
+function draw_profile_name(p, x, y, font) {
+    if(p == PROF_SUB)   print(x, y, font, OLED_WHITE, S_SUB[0]);
+    if(p == PROF_WZ_AR) print(x, y, font, OLED_WHITE, S_WZ_AR[0]);
+    if(p == PROF_MP_AR) print(x, y, font, OLED_WHITE, S_MP_AR[0]);
+    if(p == PROF_MISC)  print(x, y, font, OLED_WHITE, S_MISC[0]);
+}
+
+function prof_name_len(p) {
+    if(p == PROF_SUB)  return 3;
+    if(p == PROF_MISC) return 4;
+    return 5;
+}
+
 // Profile name centered horizontally at row y
-function draw_profile_name(p, y, font, char_w) {
-    if(p == PROF_SUB)   print(64 - (3 * char_w) / 2, y, font, OLED_WHITE, S_SUB[0]);
-    if(p == PROF_WZ_AR) print(64 - (5 * char_w) / 2, y, font, OLED_WHITE, S_WZ_AR[0]);
-    if(p == PROF_MP_AR) print(64 - (5 * char_w) / 2, y, font, OLED_WHITE, S_MP_AR[0]);
-    if(p == PROF_MISC)  print(64 - (4 * char_w) / 2, y, font, OLED_WHITE, S_MISC[0]);
+function draw_profile_name_centered(p, y, font, char_w) {
+    draw_profile_name(p, 64 - (prof_name_len(p) * char_w) / 2, y, font);
+}
+
+// One idle-screen row: chevron if current, slot name, profile, rapid state
+function draw_slot_row(s, y) {
+    if(s == slot) {
+        putc_oled(1, 62);   // >
+        puts_oled(0, y, OLED_FONT_SMALL, 1, OLED_WHITE);
+    }
+    if(s == SLOT_PRI) print(10, y, OLED_FONT_SMALL, OLED_WHITE, S_PRI[0]);
+    else              print(10, y, OLED_FONT_SMALL, OLED_WHITE, S_SEC[0]);
+    draw_profile_name(slot_prof[s], 42, y, OLED_FONT_SMALL);
+    if(slot_rapid[s]) print(88, y, OLED_FONT_SMALL, OLED_WHITE, S_R_ON[0]);
+    else              print(88, y, OLED_FONT_SMALL, OLED_WHITE, S_R_OFF[0]);
 }
 
 // Number line: maps -30..+30 across x=4..124
@@ -790,10 +882,12 @@ function draw_number_line() {
     }
 }
 
-// Idle screen: profile name on top, "RAPID ON" / "RAPID OFF" below
+// Idle screen: one row per weapon slot, chevron on the one in hand
+//   >PRI  MP AR  R:OFF
+//    SEC  SUB    R:ON
 function draw_active_screen() {
+    sync_active();   // so the rows reflect unsaved edits to the current slot
     cls_oled(OLED_BLACK);
-    draw_profile_name(active_prof, 12, OLED_FONT_MEDIUM, MEDIUM_W);
-    if(cfg[SET_RAPID]) print(36, 42, OLED_FONT_SMALL, OLED_WHITE, S_RAPID_ON[0]);
-    else               print(32, 42, OLED_FONT_SMALL, OLED_WHITE, S_RAPID_OFF[0]);
+    draw_slot_row(SLOT_PRI, 18);
+    draw_slot_row(SLOT_SEC, 38);
 }
