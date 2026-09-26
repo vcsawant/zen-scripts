@@ -1,6 +1,7 @@
 // BO7 Aim Assist + Anti-Recoil + Rapid Fire, with profiles and weapon slots
 //
-// Layout: L1 = aim (ADS), R1 = shoot, Triangle = swap weapon (hold = plates).
+// Layout: L1 = aim (ADS), R1 = shoot, Triangle = swap weapon (hold = plates),
+//         Circle hold = pull out knife.
 //
 // Weapon slots
 //   The script tracks whether you hold your PRIMARY or SECONDARY by watching
@@ -8,8 +9,11 @@
 //   Triangle always passes through to the game. Each slot owns its own
 //   profile and its own rapid fire state, so one tap of Triangle swaps both.
 //   The slot is not saved; the script boots on PRIMARY.
+//   Knife: holding Circle past KNIFE_HOLD_MS marks the knife as out. The next
+//   Triangle tap puts it away and returns to the SAME slot, no flip. The OLED
+//   shows KNIFE OUT on the top row. Mods keep running with the knife out.
 //   Drift happens (respawn, ground pickups, swapping with one gun). Resync:
-//   hold D-pad Left + press Up forces PRIMARY. The idle OLED shows both slots
+//   hold D-pad Left + press Up forces PRIMARY, knife away. The idle OLED shows both slots
 //   with a chevron on the current one, so drift is easy to spot.
 //
 // Profiles
@@ -157,7 +161,8 @@ const int16 PROF_DEF[] = {
 define N_SLOT       = 2;
 define SLOT_PRI     = 0;
 define SLOT_SEC     = 1;
-define SWAP_HOLD_MS = 250;   // Triangle released sooner than this = weapon swap, longer = plate
+define SWAP_HOLD_MS  = 250;  // Triangle released sooner than this = weapon swap, longer = plate
+define KNIFE_HOLD_MS = 250;  // Circle held at least this long = knife out
 
 // --- Menu pages: page 0 is PROFILE, page n is setting n-1 ---
 
@@ -219,6 +224,7 @@ const string S_PRI       = "PRI";
 const string S_SEC       = "SEC";
 const string S_R_ON      = "R:ON";
 const string S_R_OFF     = "R:OFF";
+const string S_KNIFE     = "KNIFE OUT";
 
 // ASCII digit lookup: '0'=48 .. '9'=57
 const uint8 ASCII_DIGIT[] = { 48, 49, 50, 51, 52, 53, 54, 55, 56, 57 };
@@ -233,6 +239,8 @@ int slot = SLOT_PRI;         // weapon slot in hand, not persisted
 int slot_prof[N_SLOT];       // profile per slot
 int slot_rapid[N_SLOT];      // rapid fire per slot
 int tri_t;                   // ms Triangle has been held
+int knife_out = FALSE;       // knife in hand, not persisted
+int cir_t;                   // ms Circle has been held
 
 int pv[N_PVARS];             // slot buffer for load / save
 int set_bits[N_SET];         // bit width of each setting's step index
@@ -292,6 +300,7 @@ main {
 
     // --- Slot resync: D-pad Left + Up forces PRIMARY ---
     if(!config_mode && get_val(PS4_LEFT) && event_press(PS4_UP)) {
+        knife_out = FALSE;
         set_slot(SLOT_PRI);
         rumble_left = 1;
         block(PS4_LEFT, 100);
@@ -299,11 +308,29 @@ main {
     }
 
     // --- Weapon swap tracking: Triangle tap = swap, hold = plates ---
+    //     With the knife out a tap just puts it away, same slot.
     if(!config_mode) {
         if(event_press(PS4_TRIANGLE)) tri_t = 0;
         if(get_val(PS4_TRIANGLE) && tri_t < 10000) tri_t = tri_t + get_rtime();
         if(event_release(PS4_TRIANGLE) && tri_t < SWAP_HOLD_MS) {
-            set_slot(1 - slot);
+            if(knife_out) {
+                knife_out = FALSE;
+                draw_active_screen();
+            } else {
+                set_slot(1 - slot);
+            }
+        }
+    }
+
+    // --- Knife tracking: Circle held past KNIFE_HOLD_MS = knife out ---
+    if(!config_mode) {
+        if(event_press(PS4_CIRCLE)) cir_t = 0;
+        if(get_val(PS4_CIRCLE) && cir_t < KNIFE_HOLD_MS) {
+            cir_t = cir_t + get_rtime();
+            if(cir_t >= KNIFE_HOLD_MS && !knife_out) {
+                knife_out = TRUE;
+                draw_active_screen();
+            }
         }
     }
 
@@ -882,12 +909,15 @@ function draw_number_line() {
     }
 }
 
-// Idle screen: one row per weapon slot, chevron on the one in hand
+// Idle screen: KNIFE OUT banner when relevant, then one row per weapon
+// slot with a chevron on the one in hand (or the one the knife returns to)
+//       KNIFE OUT
 //   >PRI  MP AR  R:OFF
 //    SEC  SUB    R:ON
 function draw_active_screen() {
     sync_active();   // so the rows reflect unsaved edits to the current slot
     cls_oled(OLED_BLACK);
-    draw_slot_row(SLOT_PRI, 18);
-    draw_slot_row(SLOT_SEC, 38);
+    if(knife_out) print(64 - (9 * SMALL_W) / 2, 2, OLED_FONT_SMALL, OLED_WHITE, S_KNIFE[0]);
+    draw_slot_row(SLOT_PRI, 22);
+    draw_slot_row(SLOT_SEC, 42);
 }

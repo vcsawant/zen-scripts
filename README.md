@@ -8,7 +8,7 @@ compile, and program it to the device.
 Call of Duty: Black Ops 7 script with three independent features, four
 tuning profiles, primary/secondary weapon tracking, and an on-device OLED
 config menu. PlayStation button names are used throughout (L1 = aim, R1 =
-shoot, Triangle = swap weapon).
+shoot, Triangle = swap weapon, Circle hold = knife).
 
 ### Weapon slots
 
@@ -26,10 +26,16 @@ one in hand:
  SEC  SUB    R:ON
 ```
 
-The slot is not saved. The script boots on primary. It also drifts when the
-game swaps for you: respawns, picking a gun up off the ground, or tapping
-Triangle while carrying only one weapon. When the chevron disagrees with your
-hands, hold D-pad Left and press Up to force primary.
+Holding Circle pulls out the knife. The script marks that after 250 ms and
+shows KNIFE OUT on the top row. Tapping Triangle then puts the knife away and
+returns you to the same weapon, so the slot does not flip. Mods keep running
+with the knife out.
+
+The slot and knife state are not saved. The script boots on primary with the
+knife away. It also drifts when the game swaps for you: respawns, picking a
+gun up off the ground, or tapping Triangle while carrying only one weapon.
+When the chevron disagrees with your hands, hold D-pad Left and press Up to
+force primary with the knife away.
 
 ### Profiles
 
@@ -127,7 +133,7 @@ value therefore works for every semi-auto.
 | Action | Input |
 |---|---|
 | Enter config | Hold D-pad Left, press Down |
-| Resync weapon slot to primary | Hold D-pad Left, press Up (in game) |
+| Resync to primary, knife away | Hold D-pad Left, press Up (in game) |
 | Change page | D-pad Left / Right (wraps) |
 | Adjust value | D-pad Up / Down |
 | Reset the current profile to its preset | Square |
